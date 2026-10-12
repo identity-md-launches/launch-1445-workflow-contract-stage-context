@@ -42,7 +42,7 @@ come from the approved workflow context and the launch section of the assignment
 | Launch token | `LaunchToken` (`src/LaunchToken.sol`), no constructor arguments |
 | Application contracts, in order | `Game` |
 | `Game` constructor | `(address creator, address launchToken, address verifier, bytes32 rules)` |
-| `creator` | `$owner` = `0x0a5b0e232d47541eb503bc862a9db2672b8fba24` |
+| `creator` | `$owner`: the launch owner. The assignment's launch section declares it as `0x0a5b0e232d47541eb503bc862a9db2672b8fba24`; the approved context labels that same address `platform` and names no separate creator wallet. See "Owner identity" below. |
 | `launchToken` | `$token` (the deployed `LaunchToken`) |
 | `verifier` | `0x345b9e44dc9ea841ea589fb7e0907139fa687a20` (the unfunded signer from the approved context) |
 | `rules` | `0x6a126dc671dbed043943f72f26c072f71bc7095efd3d0affa4ca4cb56bfcace8` (`rulesHash` of the approved `sdk/arcade-engine.mjs`) |
@@ -73,7 +73,7 @@ vault from tokens the creator deposits, not minted.
 
 A funded, capped, player-claimed reward vault with an EIP-712 voucher signer.
 
-- **Immutable policy**: `owner` (creator), `token` (LOOT), `signer`, `rulesHash`,
+- **Immutable policy**: `owner` (`$owner`, the vault administrator), `token` (LOOT), `signer`, `rulesHash`,
   `rewardPerPoint = 1e18`, `maxReward = 100e18`, `closesAt = deployment time + 365 days`.
 - **`claimReward(session, player, releaseHash, rulesHash, amount, deadline, signature)`**:
   pays `amount` LOOT to `msg.sender`, who must equal `player`. Requires a non-zero session and
@@ -119,20 +119,37 @@ replacement token, paid entry or player stakes) is as the route requires.
 
 ## Trust assumptions and operational responsibilities
 
+- **Owner identity.** `owner` is the vault's only privileged role: the sole `recoverExpired()`
+  caller and its sole beneficiary. It is immutable, and the template gives it no transfer path.
+  The route (`ARCADE_REWARDS.md`) requires this role to be the game's creator, not the factory,
+  the sponsor or the platform. The launch fills it with `$owner`, and the assignment's launch
+  section resolves `$owner` to `0x0a5b0e232d47541eb503bc862a9db2672b8fba24`. The approved
+  context lists that address only as `platform` and gives no creator wallet, so this repository
+  cannot confirm that the two are the same party, and it does not invent a creator address.
+  Whoever controls `$owner` at deployment is the party that must fund the vault and the only
+  party that can recover unused LOOT after `closesAt`. **Admission condition for the manifest and
+  review steps:** if the creator's wallet is not `0x0a5b…ba24`, the launch request must name the
+  creator's wallet as owner before `launch.json` is written; deploying with another owner cannot
+  be corrected afterwards. The local `script/Deploy.s.sol` constant `OWNER` mirrors the declared
+  launch value and is a dry-run setting, not the source of the deployed owner.
 - **The signer is a trusted-results service, not trustless validation.** The vault caps each
   claim at 100 LOOT and rejects duplicates, replays across vaults and chains, and expired
   vouchers, but it cannot tell an honest voucher from a dishonest one. A compromised signer key
   can drain whatever the vault holds, one capped claim per session. Keep the vault's balance
-  bounded to what the creator is willing to lose; top it up rather than pre-funding a year.
+  bounded to what the owner is willing to lose; top it up rather than pre-funding a year.
 - **The signer has no other power.** It cannot recover, pause, mint or change anything. It is an
   unfunded EOA that signs vouchers and never sends transactions.
-- **The creator (owner) funds the vault** by transferring LOOT to the `Game` address. There is no
-  deposit function; a plain `transfer` is the funding path. Unfunded or underfunded vaults make
+- **The owner funds the vault** by transferring LOOT to the `Game` address. There is no
+  deposit function; a plain `transfer` is the funding path, and any address can send tokens in,
+  but only `owner` can ever take unused tokens out. The launch sends the requester's 10% to the
+  allocation receiver `0x67b31cfc35b477b8bcdf3458b713fac759a8b1b6`, which is not the owner
+  address: LOOT deposited from there, or from anyone else, is recoverable only by `owner` after
+  `closesAt`. Fund the vault only from a party that accepts that. Unfunded or underfunded vaults make
   claims revert (`ERC20InsufficientBalance`); the session stays unclaimed and the voucher can be
   retried once funded, until its deadline. The host must not show a reward as available when the
   pool is empty.
-- **The creator can recover only after `closesAt`**, and then recovers everything, including any
-  tokens deposited later. The creator cannot withdraw earlier, change the signer, or alter
+- **The owner can recover only after `closesAt`**, and then recovers everything, including any
+  tokens deposited later. The owner cannot withdraw earlier, change the signer, or alter
   terms. After `closesAt` the vault is finished; a new season needs a new vault.
 - **Vouchers expire.** The service chooses each voucher's deadline (at most `closesAt`). Players
   must be shown the deadline before confirming, and the host's "My reward" control must support
@@ -149,10 +166,14 @@ replacement token, paid entry or player stakes) is as the route requires.
 ## After launch
 
 Owner-settable values: none. Every value the vault needs is a constructor argument the brief
-gives, so nothing is left unset. What the creator and services must do:
+gives, so nothing is left unset. What the owner and services must do:
 
-1. **Fund the vault.** Transfer LOOT from the creator's wallet (their share arrives via the
-   allocation receiver) to the deployed `Game` address. Check `token.balanceOf(Game)`.
+0. **Confirm the owner before the manifest is written.** `Game.owner()` must be the creator's
+   wallet (see "Owner identity"). If the creator is not `0x0a5b…ba24`, the request must name the
+   creator as owner first; there is no way to change the owner after deployment.
+1. **Fund the vault.** Transfer LOOT to the deployed `Game` address. The requester's share of the
+   supply arrives at the allocation receiver `0x67b3…b1b6`; tokens sent from there become
+   recoverable only by `Game.owner()` after `closesAt`. Check `token.balanceOf(Game)`.
 2. **Disclose `closesAt()`.** Read it from the deployed vault and publish it as the final claim
    expiry.
 3. **Point the signer worker at the deployed vault**: it must sign with the EIP-712 domain
@@ -160,7 +181,8 @@ gives, so nothing is left unset. What the creator and services must do:
 4. **Publication callback** (`dist/pepe-game.json` `onchain.rewards`): `protocol`
    `pepe-arcade/1`, `rulesId` `pepe-arcade-run/1`, the `rulesHash` and `signer` above,
    `rewardPerPoint` `"1000000000000000000"`, `hostedOnly` `true`. Later stage.
-5. **Recovery.** After `closesAt`, the owner may call `recoverExpired()` from the owner wallet.
+5. **Recovery.** After `closesAt`, `recoverExpired()` may be called only from the `Game.owner()`
+   wallet, and the whole balance goes to that wallet.
 
 ## Tests
 

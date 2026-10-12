@@ -16,7 +16,10 @@ contract Deploy is Script {
         bytes32 rulesHash;
     }
 
-    /// @dev The approved workflow context for this launch.
+    /// @dev Dry-run values mirroring the launch: `OWNER` is what the assignment's launch section
+    /// declares as the owner that `$owner` resolves to (the approved context labels the same address
+    /// `platform`; it names no separate creator wallet). The deployed owner is set by the manifest's
+    /// `$owner`, not by this constant. `SIGNER` and `RULES_HASH` are the approved context's values.
     address public constant OWNER = 0x0A5b0e232d47541eB503bC862a9DB2672b8fBa24;
     address public constant SIGNER = 0x345b9E44DC9Ea841ea589Fb7E0907139fa687a20;
     bytes32 public constant RULES_HASH = 0x6a126dc671dbed043943f72f26c072f71bc7095efd3d0affa4ca4cb56bfcace8;

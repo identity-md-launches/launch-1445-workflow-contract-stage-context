@@ -11,7 +11,8 @@ contract DeployTest is Test {
         vm.warp(1_800_000_000);
         Deploy script = new Deploy();
         Deploy.Config memory config = script.launchConfig();
-        assertEq(config.owner, 0x0A5b0e232d47541eB503bC862a9DB2672b8fBa24);
+        // The launch section's declared owner, which `$owner` resolves to; not a creator this tree chose.
+        assertEq(config.owner, 0x0A5b0e232d47541eB503bC862a9DB2672b8fBa24, "declared launch owner");
         assertEq(config.signer, 0x345b9E44DC9Ea841ea589Fb7E0907139fa687a20);
         assertEq(config.rulesHash, 0x6a126dc671dbed043943f72f26c072f71bc7095efd3d0affa4ca4cb56bfcace8);
 
