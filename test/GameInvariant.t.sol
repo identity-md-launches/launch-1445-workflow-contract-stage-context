@@ -335,6 +335,73 @@ contract GameInvariantTest is StdInvariant, Test {
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
+    /// @dev Exercise the random runner's actual handlers through a complete lifecycle. Exact
+    /// counters ensure the conservation and replay checks are reachable with nonzero payouts,
+    /// rather than passing only over empty balances or already-expired claims.
+    function test_handlerReachesClaimsReplayAndRecovery() public {
+        bytes32 release = keccak256("handler-release");
+        handler.claimHonest(0, 5 ether, closesAt, release); // empty vault
+        assertEq(handler.ghostHonestAttempts(), 1);
+        assertEq(handler.paidCount(), 0);
+        invariant_tokensAreConserved();
+
+        handler.fund(11 ether);
+        handler.claimHonest(0, 5 ether, closesAt, release);
+        assertEq(handler.ghostSessionsPaid(), 1);
+        assertEq(handler.ghostClaimed(), 5 ether);
+        assertEq(token.balanceOf(handler.players(0)), 5 ether);
+        handler.replay(0); // still funded and before the original deadline
+        assertEq(handler.ghostReplayAttempts(), 1);
+        for (uint256 kind; kind < 9; ++kind) {
+            handler.claimForged(kind, 1, 1 ether, release);
+        }
+        assertEq(handler.ghostForgedAttempts(), 9);
+        handler.recover(0); // owner, before close
+        assertEq(handler.ghostRecovered(), 0);
+        invariant_tokensAreConserved();
+        invariant_sessionsArePaidOnceAndOnlyWhenHonest();
+        invariant_closeOrderingAndImmutablePolicy();
+
+        for (uint256 i; i < 3; ++i) {
+            handler.warp(120 days);
+        }
+        handler.warp(5 days);
+        assertEq(block.timestamp, closesAt);
+        handler.claimHonest(1, 1 ether, closesAt, release);
+        assertEq(handler.ghostSessionsPaid(), 2, "claim at the closing second was not exercised");
+        handler.recover(0); // owner, exactly at close
+        assertEq(handler.ghostRecovered(), 0);
+        invariant_tokensAreConserved();
+        invariant_sessionsArePaidOnceAndOnlyWhenHonest();
+        invariant_closeOrderingAndImmutablePolicy();
+
+        handler.warp(1);
+        handler.claimHonest(2, 1 ether, closesAt, release);
+        assertEq(handler.ghostHonestAttempts(), 4);
+        assertEq(handler.ghostSessionsPaid(), 2, "expired voucher was paid");
+        handler.recover(1); // a player, after close
+        assertEq(handler.ghostRecovered(), 0);
+        handler.recover(0); // owner, after close
+        assertEq(handler.ghostRecoveryAttempts(), 4);
+        assertEq(handler.ghostRecovered(), 5 ether);
+        assertEq(token.balanceOf(owner), 5 ether);
+        invariant_tokensAreConserved();
+        invariant_sessionsArePaidOnceAndOnlyWhenHonest();
+        invariant_closeOrderingAndImmutablePolicy();
+
+        handler.fund(3 ether); // late deposits do not reopen claims
+        handler.claimHonest(3, 1 ether, closesAt, release);
+        assertEq(handler.ghostSessionsPaid(), 2);
+        handler.recover(0);
+        handler.recover(0); // repeated recovery is harmless
+        assertEq(handler.ghostFunded(), 14 ether);
+        assertEq(handler.ghostClaimed(), 6 ether);
+        assertEq(handler.ghostRecovered(), 8 ether);
+        invariant_tokensAreConserved();
+        invariant_sessionsArePaidOnceAndOnlyWhenHonest();
+        invariant_closeOrderingAndImmutablePolicy();
+    }
+
     /// @dev Conservation. What the vault holds is exactly what went in minus what it paid out and
     /// gave back; every token is at an address we account for; each player holds exactly the sum
     /// of the vouchers they claimed; the owner holds only what recovery returned; the supply never

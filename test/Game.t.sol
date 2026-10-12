@@ -15,7 +15,9 @@ import {ArcadeRewardVault} from "../src/ArcadeRewardVault.sol";
 contract ReentrantToken is IERC20 {
     Game public vault;
     bytes public replay;
+    bool public attempted;
     bool public reentered;
+    bytes public reentryError;
     mapping(address => uint256) public override balanceOf;
     uint256 public override totalSupply;
 
@@ -33,8 +35,12 @@ contract ReentrantToken is IERC20 {
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         if (address(vault) != address(0) && msg.sender == address(vault)) {
-            (bool ok,) = address(vault).call(replay);
-            if (ok) reentered = true;
+            // Attempt once, so a missing guard produces an observable nested success rather
+            // than recursion that eventually reverts for an unrelated reason.
+            Game target = vault;
+            vault = Game(address(0));
+            attempted = true;
+            (reentered, reentryError) = address(target).call(replay);
         }
         return true;
     }
@@ -141,6 +147,11 @@ contract GameTest is Test {
     function _claim(bytes32 session_, uint256 amount, uint64 deadline, bytes memory sig) internal {
         vm.prank(player);
         game.claimReward(session_, player, releaseHash, RULES_HASH, amount, deadline, sig);
+    }
+
+    function _signedDigest(bytes32 digest) internal view returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
+        return abi.encodePacked(r, s, v);
     }
 
     // ------------------------------------------------------------- constructor
@@ -374,22 +385,68 @@ contract GameTest is Test {
         assertEq(token.balanceOf(address(empty)), 0);
     }
 
-    function test_reentrantTokenCannotClaimTwice() public {
+    function test_reentrantTokenCannotClaimAnotherVoucher() public {
         ReentrantToken evil = new ReentrantToken();
         Game evilVault = new Game(owner, address(evil), signer, RULES_HASH);
         evil.fund(address(evilVault), 1_000 ether);
 
         uint64 deadline = uint64(block.timestamp + 1 days);
         bytes memory sig = _voucher(signerKey, address(evilVault), 1, session, 5 ether, deadline);
+        // A fresh session, signed for the token that actually makes the callback. Without
+        // nonReentrant this would pass every caller, signature, funding and replay check.
+        bytes32 nestedSession = keccak256("nested-session");
+        bytes memory nestedSig = _signedDigest(
+            _digest(address(evilVault), 1, nestedSession, address(evil), releaseHash, RULES_HASH, 3 ether, deadline)
+        );
         bytes memory replay = abi.encodeCall(
-            ArcadeRewardVault.claimReward, (session, player, releaseHash, RULES_HASH, 5 ether, deadline, sig)
+            ArcadeRewardVault.claimReward,
+            (nestedSession, address(evil), releaseHash, RULES_HASH, 3 ether, deadline, nestedSig)
         );
         evil.arm(evilVault, replay);
 
         vm.prank(player);
         evilVault.claimReward(session, player, releaseHash, RULES_HASH, 5 ether, deadline, sig);
+        assertTrue(evil.attempted(), "token never attempted the callback");
         assertFalse(evil.reentered(), "guard let the token re-enter");
+        assertEq(evil.reentryError(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
         assertEq(evil.balanceOf(player), 5 ether, "paid exactly once");
+        assertEq(evil.balanceOf(address(evil)), 0, "nested claim moved tokens");
+        assertEq(evil.balanceOf(address(evilVault)), 995 ether);
+        assertTrue(evilVault.claimed(session));
+        assertFalse(evilVault.claimed(nestedSession), "rejected callback consumed its session");
+
+        // The same callback works outside the outer claim, proving its inputs were valid and
+        // that the guard resets after the successful outer call.
+        vm.prank(address(evil));
+        evilVault.claimReward(nestedSession, address(evil), releaseHash, RULES_HASH, 3 ether, deadline, nestedSig);
+        assertEq(evil.balanceOf(address(evil)), 3 ether);
+        assertEq(evil.balanceOf(address(evilVault)), 992 ether);
+        assertTrue(evilVault.claimed(nestedSession));
+    }
+
+    function test_reentrantOwnerCannotRecoverDuringRecovery() public {
+        ReentrantToken evil = new ReentrantToken();
+        // The token must also be the owner or the callback would fail access control even
+        // without the guard. This mock probes the guard, not the plain launch token's behavior.
+        Game evilVault = new Game(address(evil), address(evil), signer, RULES_HASH);
+        evil.fund(address(evilVault), 1_000 ether);
+        evil.arm(evilVault, abi.encodeCall(ArcadeRewardVault.recoverExpired, ()));
+        vm.warp(uint256(evilVault.closesAt()) + 1);
+
+        vm.prank(address(evil));
+        evilVault.recoverExpired();
+        assertTrue(evil.attempted(), "token never attempted the callback");
+        assertFalse(evil.reentered(), "recovery guard let the owner re-enter");
+        assertEq(evil.reentryError(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
+        assertEq(evil.balanceOf(address(evil)), 1_000 ether);
+        assertEq(evil.balanceOf(address(evilVault)), 0);
+
+        // Recovery stays usable after the callback is rejected, including for a later deposit.
+        evil.fund(address(evilVault), 1);
+        vm.prank(address(evil));
+        evilVault.recoverExpired();
+        assertEq(evil.balanceOf(address(evil)), 1_000 ether + 1);
+        assertEq(evil.balanceOf(address(evilVault)), 0);
     }
 
     // ----------------------------------------------------------------- recovery
