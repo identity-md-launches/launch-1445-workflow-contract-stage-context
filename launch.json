@@ -1,0 +1,27 @@
+{
+  "kind": "evm_project",
+  "token": {
+    "contract": "LaunchToken",
+    "name": "Skyline Loot",
+    "symbol": "LOOT",
+    "decimals": 18
+  },
+  "contracts": [
+    {
+      "contract": "Game",
+      "constructorArgs": [
+        "$owner",
+        "$token",
+        "0x345b9e44dc9ea841ea589fb7e0907139fa687a20",
+        "0x6a126dc671dbed043943f72f26c072f71bc7095efd3d0affa4ca4cb56bfcace8"
+      ]
+    }
+  ],
+  "pool": {
+    "pairedCurrency": "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7",
+    "fee": 12500,
+    "tickSpacing": 60,
+    "initialPrice": "79228162514264337593543950336"
+  },
+  "notes": "SKYLINE HEIST launch: the Skyline Loot (LOOT) launch token and one application contract, Game (src/Game.sol), the pepe2pepe ArcadeRewardVault with the launch policy folded in. Game constructor (address creator, address launchToken, address verifier, bytes32 rules): creator is $owner, the launch owner, who alone can recover unused tokens and only after closesAt; launchToken is $token, the deployed LaunchToken paid as rewards; verifier is the unfunded reward-voucher signer named by the approved workflow context, with no other power; rules is the rulesHash of the approved arcade engine from the same context. Fixed in source: 1 LOOT per verified point, at most 100 points per run, closesAt = deployment time + 365 days (read closesAt() after deployment). The constructor makes no external calls. The vault holds nothing at launch; the owner funds it after launch by a plain LOOT transfer. Entry is free and players pay only gas to claim. The pool pairs with IMD at the launch policy fee; supply and allocations are handled by the factory and are not manifest fields."
+}
